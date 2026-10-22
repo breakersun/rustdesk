@@ -2460,6 +2460,43 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
 }
 
 pub fn load_custom_client() {
+    // [custom-client] begin: inject compile-time server configuration.
+    // These values are embedded by CI via `option_env!`, so a normal upstream
+    // build (without RDZ_* variables) remains a no-op.
+    let rendezvous_server = option_env!("RDZ_RENDEZVOUS_SERVER")
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(rendezvous_server) = rendezvous_server {
+        let relay_server = option_env!("RDZ_RELAY_SERVER")
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let key = option_env!("RDZ_KEY").map(str::trim).unwrap_or_default();
+        let api_server = option_env!("RDZ_API").map(str::trim).unwrap_or_default();
+
+        *config::PROD_RENDEZVOUS_SERVER.write().unwrap() = rendezvous_server.to_owned();
+        let mut overwrite_settings = config::OVERWRITE_SETTINGS.write().unwrap();
+        overwrite_settings.insert(
+            keys::OPTION_CUSTOM_RENDEZVOUS_SERVER.to_string(),
+            rendezvous_server.to_owned(),
+        );
+        overwrite_settings.insert(keys::OPTION_KEY.to_string(), key.to_owned());
+        if let Some(relay_server) = relay_server {
+            overwrite_settings.insert(
+                keys::OPTION_RELAY_SERVER.to_string(),
+                relay_server.to_owned(),
+            );
+        }
+        overwrite_settings.insert(keys::OPTION_API_SERVER.to_string(), api_server.to_owned());
+        drop(overwrite_settings);
+
+        // The settings UI reads this opt-out from BUILTIN_SETTINGS, not from
+        // OVERWRITE_SETTINGS (see desktop_setting_page.dart and settings_page.dart).
+        config::BUILTIN_SETTINGS.write().unwrap().insert(
+            keys::OPTION_HIDE_SERVER_SETTINGS.to_string(),
+            "Y".to_owned(),
+        );
+    }
+    // [custom-client] end
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());

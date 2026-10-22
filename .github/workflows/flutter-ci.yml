@@ -20,5 +20,7 @@ on:
 jobs:
   run-ci:
     uses: ./.github/workflows/flutter-build.yml
+    # [custom-client] allow the reusable build to read RDZ_* repository secrets.
+    secrets: inherit
     with:
       upload-artifact: false
