@@ -3,6 +3,9 @@ name: Publish Windows Portable
 # The default branch of this fork is a mirror. First dispatch Flutter Nightly
 # Build from the custom-client branch; after it succeeds, dispatch this workflow
 # from the same branch.
+# The push trigger exists only to make GitHub register this non-default-branch
+# workflow; after registration it may be kept or removed, and it runs only when
+# this workflow file itself changes.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +17,9 @@ on:
         required: false
         default: ""
         type: string
+  push:
+    branches: [custom-client]
+    paths: ['.github/workflows/publish-portable.yml']
 
 permissions:
   actions: read
