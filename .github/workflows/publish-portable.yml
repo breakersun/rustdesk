@@ -1,0 +1,269 @@
+name: Publish Windows Portable
+
+# The default branch of this fork is a mirror. Run this workflow manually from
+# the custom-client branch; it can also target an existing artifact-producing run.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: >-
+          Source Actions run ID. Defaults to the newest successful Full Flutter
+          CI run on the current branch. Use a Flutter Nightly/Tag run ID if the
+          selected CI run has no artifacts.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-windows-portable
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish portable x64 and Scoop manifest
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: custom-client-portable
+      ASSET_NAME: RustDesk-portable-x64.zip
+      ARTIFACT_NAME: rustdesk-unsigned-windows-x86_64
+    steps:
+      - name: Resolve source workflow run
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REQUESTED_RUN_ID: ${{ inputs.run_id }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${REQUESTED_RUN_ID}" ]]; then
+            source_run_id="${REQUESTED_RUN_ID}"
+          else
+            encoded_branch=$(jq -rn --arg value "${BRANCH}" '$value|@uri')
+            source_run_id=$(gh api \
+              "/repos/${REPOSITORY}/actions/workflows/flutter-ci.yml/runs?branch=${encoded_branch}&status=success&per_page=1" \
+              --jq '.workflow_runs[0].id // empty')
+            if [[ -z "${source_run_id}" ]]; then
+              echo "::error::No successful Full Flutter CI run found on ${BRANCH}"
+              exit 1
+            fi
+          fi
+
+          run_json=$(gh api "/repos/${REPOSITORY}/actions/runs/${source_run_id}")
+          source_sha=$(printf '%s' "${run_json}" | jq -r '.head_sha')
+          source_run_number=$(printf '%s' "${run_json}" | jq -r '.run_number')
+
+          if [[ -z "${source_sha}" ]] || [[ "${source_sha}" == "null" ]]; then
+            echo "::error::Source run ${source_run_id} has no head SHA"
+            exit 1
+          fi
+
+          {
+            echo "id=${source_run_id}"
+            echo "sha=${source_sha}"
+            echo "run_number=${source_run_number}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Select and download the x64 portable artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.id }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/portable"
+          mkdir -p "${work}"
+
+          artifact_json=$(gh api \
+            "/repos/${REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
+          artifact_id=$(printf '%s' "${artifact_json}" | jq -r --arg name "${ARTIFACT_NAME}" '
+            [.artifacts[] | select(.name == $name and .expired == false)][0].id // empty
+          ')
+
+          if [[ -z "${artifact_id}" ]]; then
+            echo "::error::Artifact ${ARTIFACT_NAME} was not found in run ${SOURCE_RUN_ID}."
+            echo "::error::Full Flutter CI sets upload-artifact=false; pass the run_id of a Flutter Nightly/Tag run."
+            exit 1
+          fi
+
+          gh api "/repos/${REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > "${work}/${ARTIFACT_NAME}.zip"
+          unzip -q "${work}/${ARTIFACT_NAME}.zip" -d "${work}/archive"
+
+          exe_path=$(find "${work}/archive" -type f -iname 'rustdesk.exe' -print -quit)
+          if [[ -z "${exe_path}" ]]; then
+            echo "::error::Downloaded portable artifact does not contain rustdesk.exe"
+            find "${work}/archive" -maxdepth 3 -type f -print
+            exit 1
+          fi
+          portable_dir=$(dirname "${exe_path}")
+
+          # Flutter Windows currently emits rustdesk.exe. Scoop and shortcuts in
+          # this bucket use the stable RustDesk.exe spelling.
+          if [[ "$(basename "${exe_path}")" != "RustDesk.exe" ]]; then
+            mv "${exe_path}" "${portable_dir}/RustDesk.exe"
+          fi
+
+          echo "dir=${portable_dir}" >> "${GITHUB_OUTPUT}"
+
+      - name: Determine portable version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_RUN_NUMBER: ${{ steps.source.outputs.run_number }}
+        run: |
+          set -euo pipefail
+
+          # The portable artifact is an unsigned directory artifact and has the
+          # fixed name rustdesk-unsigned-windows-x86_64; it deliberately does
+          # not contain the versioned installer exe. Read VERSION from the same
+          # flutter-build.yml commit that produced the artifact, then append the
+          # source run number to keep repeated builds distinguishable.
+          workflow_content=$(gh api \
+            "/repos/${REPOSITORY}/contents/.github/workflows/flutter-build.yml?ref=${SOURCE_SHA}" \
+            --jq '.content' | base64 --decode)
+          base_version=$(printf '%s\n' "${workflow_content}" | \
+            sed -nE 's/^[[:space:]]*VERSION:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)
+
+          if [[ -z "${base_version}" ]]; then
+            echo "::error::Could not determine VERSION from flutter-build.yml at ${SOURCE_SHA}"
+            exit 1
+          fi
+
+          version="${base_version}-r${SOURCE_RUN_NUMBER}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package portable directory
+        id: package
+        env:
+          PORTABLE_DIR: ${{ steps.artifact.outputs.dir }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/publish"
+          mkdir -p "${work}/stage"
+
+          # Put the application at the archive root so Scoop extracts usable
+          # files directly into its versioned application directory.
+          cp -a "${PORTABLE_DIR}/." "${work}/stage/"
+          asset_path="${work}/RustDesk-portable-x64.zip"
+          (cd "${work}/stage" && zip --quiet --recurse-paths "${asset_path}" .)
+          hash=$(sha256sum "${asset_path}" | awk '{print $1}')
+
+          test -f "${work}/stage/RustDesk.exe"
+          [[ ${#hash} -eq 64 ]] || { echo "::error::Invalid SHA-256"; exit 1; }
+
+          echo "path=${asset_path}" >> "${GITHUB_OUTPUT}"
+          echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update fixed portable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ASSET_PATH: ${{ steps.package.outputs.path }}
+          ASSET_HASH: ${{ steps.package.outputs.hash }}
+        run: |
+          set -euo pipefail
+
+          release_url="https://github.com/${REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          notes=$(printf '%s\n' \
+            "Windows portable x64 build from Actions run ${SOURCE_RUN_ID}." \
+            "" \
+            "- Version: \`${VERSION}\`" \
+            "- Commit: \`${SOURCE_SHA}\`" \
+            "- SHA-256: \`${ASSET_HASH}\`" \
+            "" \
+            "This release intentionally contains the portable directory build; it does not contain the Windows installer exe.")
+
+          if gh release view "${RELEASE_TAG}" --repo "${REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${REPOSITORY}" \
+              --title "RustDesk Windows Portable (${VERSION})" \
+              --notes "${notes}" \
+              --target "${SOURCE_SHA}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${REPOSITORY}" \
+              --title "RustDesk Windows Portable (${VERSION})" \
+              --notes "${notes}" \
+              --target "${SOURCE_SHA}"
+          fi
+
+          upload_asset="${RUNNER_TEMP}/${ASSET_NAME}"
+          cp "${ASSET_PATH}" "${upload_asset}"
+          gh release upload "${RELEASE_TAG}" "${upload_asset}" \
+            --repo "${REPOSITORY}" --clobber
+
+          echo "url=${release_url}" >> "${GITHUB_ENV}"
+
+      - name: Update Scoop manifest in utils-bucket
+        env:
+          BUCKET_GITHUB_TOKEN: ${{ secrets.BUCKET_GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ASSET_URL: https://github.com/${{ github.repository }}/releases/download/${{ env.RELEASE_TAG }}/${{ env.ASSET_NAME }}
+          ASSET_HASH: ${{ steps.package.outputs.hash }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.id }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BUCKET_GITHUB_TOKEN}" ]]; then
+            echo "::error::BUCKET_GITHUB_TOKEN is not configured"
+            exit 1
+          fi
+          export GH_TOKEN="${BUCKET_GITHUB_TOKEN}"
+
+          manifest_path="${RUNNER_TEMP}/rustdesk-portable.json"
+          jq -n \
+            --arg version "${VERSION}" \
+            --arg url "${ASSET_URL}" \
+            --arg hash "${ASSET_HASH}" \
+            '{
+              version: $version,
+              description: "RustDesk Windows Portable",
+              homepage: "https://github.com/rustdesk/rustdesk",
+              license: "AGPL-3.0",
+              architecture: {
+                "64bit": {
+                  url: $url,
+                  hash: $hash
+                }
+              },
+              bin: "RustDesk.exe",
+              shortcuts: [
+                ["RustDesk.exe", "RustDesk Portable"]
+              ]
+            }' > "${manifest_path}"
+
+          current_sha=$(gh api \
+            "/repos/breakersun/utils-bucket/contents/rustdesk-portable.json?ref=main" \
+            --jq '.sha' 2>/dev/null || true)
+
+          content=$(base64 --wrap=0 < "${manifest_path}")
+          request="${RUNNER_TEMP}/manifest-request.json"
+          if [[ -n "${current_sha}" ]]; then
+            jq -n \
+              --arg message "Update rustdesk-portable to ${VERSION}" \
+              --arg content "${content}" \
+              --arg sha "${current_sha}" \
+              '{message: $message, content: $content, sha: $sha, branch: "main"}' > "${request}"
+          else
+            jq -n \
+              --arg message "Add rustdesk-portable ${VERSION}" \
+              --arg content "${content}" \
+              '{message: $message, content: $content, branch: "main"}' > "${request}"
+          fi
+
+          gh api --method PUT \
+            "/repos/breakersun/utils-bucket/contents/rustdesk-portable.json" \
+            --input "${request}" >/dev/null
