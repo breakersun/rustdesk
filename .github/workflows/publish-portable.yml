@@ -1,15 +1,16 @@
 name: Publish Windows Portable
 
-# The default branch of this fork is a mirror. Run this workflow manually from
-# the custom-client branch; it can also target an existing artifact-producing run.
+# The default branch of this fork is a mirror. First dispatch Flutter Nightly
+# Build from the custom-client branch; after it succeeds, dispatch this workflow
+# from the same branch.
 on:
   workflow_dispatch:
     inputs:
       run_id:
         description: >-
-          Source Actions run ID. Defaults to the newest successful Full Flutter
-          CI run on the current branch. Use a Flutter Nightly/Tag run ID if the
-          selected CI run has no artifacts.
+          Source Actions run ID. Defaults to the newest successful Flutter
+          Nightly Build run on the current branch. A successful Flutter Tag
+          Build run ID may also be supplied.
         required: false
         default: ""
         type: string
@@ -46,10 +47,10 @@ jobs:
           else
             encoded_branch=$(jq -rn --arg value "${BRANCH}" '$value|@uri')
             source_run_id=$(gh api \
-              "/repos/${REPOSITORY}/actions/workflows/flutter-ci.yml/runs?branch=${encoded_branch}&status=success&per_page=1" \
+              "/repos/${REPOSITORY}/actions/workflows/flutter-nightly.yml/runs?branch=${encoded_branch}&status=success&per_page=1" \
               --jq '.workflow_runs[0].id // empty')
             if [[ -z "${source_run_id}" ]]; then
-              echo "::error::No successful Full Flutter CI run found on ${BRANCH}"
+              echo "::error::No successful Flutter Nightly Build run found on ${BRANCH}"
               exit 1
             fi
           fi
@@ -88,7 +89,7 @@ jobs:
 
           if [[ -z "${artifact_id}" ]]; then
             echo "::error::Artifact ${ARTIFACT_NAME} was not found in run ${SOURCE_RUN_ID}."
-            echo "::error::Full Flutter CI sets upload-artifact=false; pass the run_id of a Flutter Nightly/Tag run."
+            echo "::error::Pass the run_id of a successful Flutter Nightly or Flutter Tag run."
             exit 1
           fi
 
