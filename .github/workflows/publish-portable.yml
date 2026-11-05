@@ -136,6 +136,9 @@ jobs:
           workflow_content=$(gh api \
             "/repos/${REPOSITORY}/contents/.github/workflows/flutter-build.yml?ref=${SOURCE_SHA}" \
             --jq '.content' | base64 --decode)
+          # Do not exit awk after the match: it must drain all producer input,
+          # otherwise printf can receive SIGPIPE on files larger than the pipe
+          # buffer and pipefail turns the extraction into a step failure.
           base_version=$(printf '%s\n' "${workflow_content}" | \
             awk '
               !found && /^[[:space:]]*VERSION:[[:space:]]*"[^"]+".*$/ {
@@ -143,7 +146,6 @@ jobs:
                 sub(/".*$/, "")
                 print
                 found = 1
-                exit
               }
             ')
 
