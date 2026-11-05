@@ -26,6 +26,7 @@ concurrency:
 jobs:
   publish:
     name: Publish portable x64 and Scoop manifest
+    if: github.ref_name == 'custom-client'
     runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: custom-client-portable
@@ -43,6 +44,10 @@ jobs:
           set -euo pipefail
 
           if [[ -n "${REQUESTED_RUN_ID}" ]]; then
+            if [[ ! "${REQUESTED_RUN_ID}" =~ ^[0-9]+$ ]]; then
+              echo "::error::run_id must be a numeric Actions run ID"
+              exit 1
+            fi
             source_run_id="${REQUESTED_RUN_ID}"
           else
             encoded_branch=$(jq -rn --arg value "${BRANCH}" '$value|@uri')
@@ -50,7 +55,7 @@ jobs:
               "/repos/${REPOSITORY}/actions/workflows/flutter-nightly.yml/runs?branch=${encoded_branch}&status=success&per_page=1" \
               --jq '.workflow_runs[0].id // empty')
             if [[ -z "${source_run_id}" ]]; then
-              echo "::error::No successful Flutter Nightly Build run found on ${BRANCH}"
+              echo "::error::No successful Flutter Nightly Build run found on ${BRANCH}; dispatch Nightly first or provide run_id"
               exit 1
             fi
           fi
@@ -132,7 +137,15 @@ jobs:
             "/repos/${REPOSITORY}/contents/.github/workflows/flutter-build.yml?ref=${SOURCE_SHA}" \
             --jq '.content' | base64 --decode)
           base_version=$(printf '%s\n' "${workflow_content}" | \
-            sed -nE 's/^[[:space:]]*VERSION:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)
+            awk '
+              !found && /^[[:space:]]*VERSION:[[:space:]]*"[^"]+".*$/ {
+                sub(/^[[:space:]]*VERSION:[[:space:]]*"/, "")
+                sub(/".*$/, "")
+                print
+                found = 1
+                exit
+              }
+            ')
 
           if [[ -z "${base_version}" ]]; then
             echo "::error::Could not determine VERSION from flutter-build.yml at ${SOURCE_SHA}"
@@ -165,6 +178,31 @@ jobs:
           echo "path=${asset_path}" >> "${GITHUB_OUTPUT}"
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
 
+      - name: Preflight utils-bucket access
+        env:
+          BUCKET_GITHUB_TOKEN: ${{ secrets.BUCKET_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Check the bucket path before replacing the fixed release asset. This
+          # prevents a successful asset overwrite from being paired with a stale
+          # manifest when bucket credentials are absent or invalid.
+          if [[ -z "${BUCKET_GITHUB_TOKEN}" ]]; then
+            echo "::error::BUCKET_GITHUB_TOKEN is not configured"
+            exit 1
+          fi
+          export GH_TOKEN="${BUCKET_GITHUB_TOKEN}"
+
+          bucket_name=$(gh api "/repos/breakersun/utils-bucket" --jq '.full_name') || {
+            status=$?
+            echo "::error::Cannot access breakersun/utils-bucket with BUCKET_GITHUB_TOKEN (HTTP 401/404 or another API failure)"
+            exit "${status}"
+          }
+          if [[ "${bucket_name}" != "breakersun/utils-bucket" ]]; then
+            echo "::error::Token resolved an unexpected repository: ${bucket_name}"
+            exit 1
+          fi
+
       - name: Create or update fixed portable release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -192,12 +230,14 @@ jobs:
               --repo "${REPOSITORY}" \
               --title "RustDesk Windows Portable (${VERSION})" \
               --notes "${notes}" \
+              --prerelease \
               --target "${SOURCE_SHA}"
           else
             gh release create "${RELEASE_TAG}" \
               --repo "${REPOSITORY}" \
               --title "RustDesk Windows Portable (${VERSION})" \
               --notes "${notes}" \
+              --prerelease \
               --target "${SOURCE_SHA}"
           fi
 
@@ -246,25 +286,61 @@ jobs:
               ]
             }' > "${manifest_path}"
 
-          current_sha=$(gh api \
-            "/repos/breakersun/utils-bucket/contents/rustdesk-portable.json?ref=main" \
-            --jq '.sha' 2>/dev/null || true)
-
           content=$(base64 --wrap=0 < "${manifest_path}")
           request="${RUNNER_TEMP}/manifest-request.json"
-          if [[ -n "${current_sha}" ]]; then
-            jq -n \
-              --arg message "Update rustdesk-portable to ${VERSION}" \
-              --arg content "${content}" \
-              --arg sha "${current_sha}" \
-              '{message: $message, content: $content, sha: $sha, branch: "main"}' > "${request}"
-          else
-            jq -n \
-              --arg message "Add rustdesk-portable ${VERSION}" \
-              --arg content "${content}" \
-              '{message: $message, content: $content, branch: "main"}' > "${request}"
-          fi
 
-          gh api --method PUT \
-            "/repos/breakersun/utils-bucket/contents/rustdesk-portable.json" \
-            --input "${request}" >/dev/null
+          # Return 75 only for a blob SHA race so the caller can refresh the SHA
+          # and retry once. Any other API failure is reported directly.
+          put_manifest() {
+            current_sha=$(gh api \
+              "/repos/breakersun/utils-bucket/contents/rustdesk-portable.json?ref=main" \
+              --jq '.sha' 2>/dev/null || true)
+
+            if [[ -n "${current_sha}" ]]; then
+              jq -n \
+                --arg message "Update rustdesk-portable to ${VERSION}" \
+                --arg content "${content}" \
+                --arg sha "${current_sha}" \
+                '{message: $message, content: $content, sha: $sha, branch: "main"}' > "${request}"
+            else
+              jq -n \
+                --arg message "Add rustdesk-portable ${VERSION}" \
+                --arg content "${content}" \
+                '{message: $message, content: $content, branch: "main"}' > "${request}"
+            fi
+
+            if put_output=$(gh api --method PUT \
+              "/repos/breakersun/utils-bucket/contents/rustdesk-portable.json" \
+              --input "${request}" 2>&1); then
+              return 0
+            fi
+
+            put_status=$?
+            if [[ "${put_output}" == *"HTTP 409"* ]]; then
+              return 75
+            fi
+            printf '%s\n' "${put_output}" >&2
+            return "${put_status}"
+          }
+
+          if put_manifest; then
+            :
+          else
+            first_status=$?
+            if [[ "${first_status}" -ne 75 ]]; then
+              exit "${first_status}"
+            fi
+
+            echo "::warning::Manifest blob SHA changed during publish; refreshing and retrying once"
+            sleep 2
+            if put_manifest; then
+              :
+            else
+              retry_status=$?
+              if [[ "${retry_status}" -eq 75 ]]; then
+                echo "::error::Manifest blob SHA raced again after one retry"
+                exit 1
+              fi
+              exit "${retry_status}"
+            fi
+          fi
