@@ -2487,7 +2487,13 @@ pub fn load_custom_client() {
             );
         }
         overwrite_settings.insert(keys::OPTION_API_SERVER.to_string(), api_server.to_owned());
+        overwrite_settings.insert("allow-auto-update".to_string(), "N".to_owned());
         drop(overwrite_settings);
+
+        // [custom-client] This option is read from the local settings layer.
+        let mut overwrite_local_settings = config::OVERWRITE_LOCAL_SETTINGS.write().unwrap();
+        overwrite_local_settings.insert("enable-check-update".to_string(), "N".to_owned());
+        drop(overwrite_local_settings);
 
         // The settings UI reads this opt-out from BUILTIN_SETTINGS, not from
         // OVERWRITE_SETTINGS (see desktop_setting_page.dart and settings_page.dart).
