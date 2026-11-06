@@ -1932,10 +1932,10 @@ jobs:
           distro: ${{ matrix.job.distro }}
           githubToken: ${{ github.token }}
           env: |
-            RDZ_RENDEZVOUS_SERVER: ${{ env.RDZ_RENDEZVOUS_SERVER }}
-            RDZ_RELAY_SERVER: ${{ env.RDZ_RELAY_SERVER }}
-            RDZ_KEY: ${{ env.RDZ_KEY }}
-            RDZ_API: ${{ env.RDZ_API }}
+            RDZ_RENDEZVOUS_SERVER: "${{ env.RDZ_RENDEZVOUS_SERVER }}"
+            RDZ_RELAY_SERVER: "${{ env.RDZ_RELAY_SERVER }}"
+            RDZ_KEY: "${{ env.RDZ_KEY }}"
+            RDZ_API: "${{ env.RDZ_API }}"
           setup: |
             ls -l "${PWD}"
             ls -l /opt/artifacts/vcpkg/installed
@@ -2258,10 +2258,10 @@ jobs:
           distro: ubuntu18.04
           githubToken: ${{ github.token }}
           env: |
-            RDZ_RENDEZVOUS_SERVER: ${{ env.RDZ_RENDEZVOUS_SERVER }}
-            RDZ_RELAY_SERVER: ${{ env.RDZ_RELAY_SERVER }}
-            RDZ_KEY: ${{ env.RDZ_KEY }}
-            RDZ_API: ${{ env.RDZ_API }}
+            RDZ_RENDEZVOUS_SERVER: "${{ env.RDZ_RENDEZVOUS_SERVER }}"
+            RDZ_RELAY_SERVER: "${{ env.RDZ_RELAY_SERVER }}"
+            RDZ_KEY: "${{ env.RDZ_KEY }}"
+            RDZ_API: "${{ env.RDZ_API }}"
           setup: |
             ls -l "${PWD}"
             ls -l /opt/artifacts/vcpkg/installed
@@ -2555,10 +2555,10 @@ jobs:
           distro: ${{ matrix.job.distro }}
           githubToken: ${{ github.token }}
           env: |
-            RDZ_RENDEZVOUS_SERVER: ${{ env.RDZ_RENDEZVOUS_SERVER }}
-            RDZ_RELAY_SERVER: ${{ env.RDZ_RELAY_SERVER }}
-            RDZ_KEY: ${{ env.RDZ_KEY }}
-            RDZ_API: ${{ env.RDZ_API }}
+            RDZ_RENDEZVOUS_SERVER: "${{ env.RDZ_RENDEZVOUS_SERVER }}"
+            RDZ_RELAY_SERVER: "${{ env.RDZ_RELAY_SERVER }}"
+            RDZ_KEY: "${{ env.RDZ_KEY }}"
+            RDZ_API: "${{ env.RDZ_API }}"
           setup: |
             ls -l "${PWD}"
           dockerRunArgs: |
@@ -2832,10 +2832,10 @@ jobs:
           distro: ${{ matrix.job.distro }}
           githubToken: ${{ github.token }}
           env: |
-            RDZ_RENDEZVOUS_SERVER: ${{ env.RDZ_RENDEZVOUS_SERVER }}
-            RDZ_RELAY_SERVER: ${{ env.RDZ_RELAY_SERVER }}
-            RDZ_KEY: ${{ env.RDZ_KEY }}
-            RDZ_API: ${{ env.RDZ_API }}
+            RDZ_RENDEZVOUS_SERVER: "${{ env.RDZ_RENDEZVOUS_SERVER }}"
+            RDZ_RELAY_SERVER: "${{ env.RDZ_RELAY_SERVER }}"
+            RDZ_KEY: "${{ env.RDZ_KEY }}"
+            RDZ_API: "${{ env.RDZ_API }}"
           setup: |
             ls -l "${PWD}"
           dockerRunArgs: |
